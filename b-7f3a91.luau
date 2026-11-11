@@ -4,7 +4,7 @@ local UserInputService: any = game:GetService("UserInputService")
 local TweenService: any     = game:GetService("TweenService")
 local HttpService: any      = game:GetService("HttpService")
 local Workspace: any        = game:GetService("Workspace")
-local Ghost: {[string]:any} = {Name="Ghost",Version="2.4.21"}
+local Ghost: {[string]:any} = {Name="Ghost",Version="2.4.22"}
 Ghost.Marks=setmetatable({},{__mode="k"})
 function Ghost.Mark(object: any, key: string, value: any)
 if not object then return end
@@ -329,7 +329,7 @@ do
 local environment=getfenv(0)
 local shared=environment
 if type(environment.getgenv)=="function" then local ok,value=pcall(environment.getgenv);if ok and type(value)=="table" then shared=value end end
-for _,name in ipairs({"hookmetamethod","getnamecallmethod","checkcaller","newcclosure","hookfunction","getrawmetatable","setreadonly","isreadonly"}) do
+for _,name in ipairs({"hookmetamethod","getnamecallmethod","checkcaller","newcclosure","hookfunction","getrawmetatable","setreadonly","isreadonly","getconnections"}) do
 local candidate=shared[name]
 if type(candidate)~="function" then candidate=environment[name] end
 if type(candidate)=="function" then Ghost.HookAPI[name]=candidate end
@@ -1109,7 +1109,9 @@ local ids,err=U.Catalog()
 if not ids then U.Status(err);return false end
 U.IDs=ids;U.Active=true
 U.Wrap(U.CatalogData,ids)
-U.Status("Unlocked cosmetic options for "..#ids.." owned-weapon items through the game's own local check. Selections are applied locally and never sent to the game's server; weapons, ammo and server ownership are unchanged.")
+local equip=Ghost.InventoryUnlock.LocalEquip
+local guarded=equip~=nil and equip.GuardHooked==true
+U.Status("Unlocked cosmetic options for "..#ids.." owned-weapon items through the game's own local check. Selections are local-only; "..(guarded and "the game's selection requests are dropped at the network layer." or "this executor exposes no request hooks, so only the click overlay protects you - avoid save/apply buttons while this is on.").." Weapons, ammo and server ownership are unchanged.")
 if U.LocalEquip then U.LocalEquip.Start() end
 return true
 end
@@ -8700,7 +8702,7 @@ record.Finish.Position=record.Start.Position+record.Direction*math.clamp(distanc
 end
 end
 end
-Ghost.InventoryUnlock.LocalEquip={Connections={},Buttons={},Overlays={},Serial=0,NextCheck=0}
+Ghost.InventoryUnlock.LocalEquip={Connections={},Buttons={},Overlays={},GuardSeen=setmetatable({},{__mode="k"}),GuardDrops=0,Serial=0,NextCheck=0}
 do
 local U=Ghost.InventoryUnlock
 local L=U.LocalEquip
@@ -9310,8 +9312,63 @@ if not ok then L.RestoreVisual();U.Status("Local appearance stopped after a capt
 end)
 else U.Status(message or "No changed native preview appeared. The previous local appearance was retained.") end
 end
+local GUARD_PATTERNS={"setmod","weaponmod","savemod","equipmod","modselect","applymod","setskin","saveskin","applyskin","setcamo","savecamo","setloadout","saveloadout","applyloadout"}
+local GUARD_EXACT={attachment=true,attachments=true,mods=true,setmods=true}
+function L.GuardDrop(remote)
+if not U.Active then return false end
+local matched=L.GuardSeen[remote]
+if matched==nil then
+matched=false
+local ok,name=pcall(function() return string.lower(remote.Name) end)
+if ok and type(name)=="string" then
+for _,pattern in ipairs(GUARD_PATTERNS) do
+if string.find(name,pattern,1,true) then matched=true;break end
+end
+if not matched and GUARD_EXACT[name] then
+local okParent,parent=pcall(function() return remote.Parent end)
+if okParent and parent~=nil then
+local okName,container=pcall(function() return string.lower(parent.Name) end)
+matched=okName and (container=="remotes" or container=="net")
+end
+end
+end
+L.GuardSeen[remote]=matched
+end
+if matched then L.GuardDrops+=1 end
+return matched
+end
+do
+local api=Ghost.HookAPI
+if type(api.hookmetamethod)=="function" and type(api.getnamecallmethod)=="function" and type(api.checkcaller)=="function" then
+local ok,err=pcall(function()
+local old
+old=api.hookmetamethod(game,"__namecall",api.newcclosure(function(self,...)
+if not U.Active then return old(self,...) end
+local method=api.getnamecallmethod()
+if (method=="FireServer" or method=="InvokeServer") and not api.checkcaller() then
+if L.GuardDrop(self) then return end
+end
+return old(self,...)
+end))
+L.GuardHooked=true
+end)
+if not ok then L.GuardHookError=tostring(err) end
+end
+end
 function L.Watch(button)
 if not button:IsA("GuiButton") or button.Name:sub(1,5)~="Item_" or L.Buttons[button] then return end
+local getconn=Ghost.HookAPI.getconnections
+if type(getconn)=="function" then
+for _,signalName in ipairs({"Activated","MouseButton1Click","MouseButton1Down","MouseButton1Up","InputBegan","InputEnded"}) do
+local okSignal,signal=pcall(function() return button[signalName] end)
+if okSignal and signal then
+local okList,list=pcall(getconn,signal)
+if okList and type(list)=="table" then
+for _,connection in ipairs(list) do pcall(function() connection:Disconnect() end) end
+end
+end
+end
+end
 local overlay=Instance.new("TextButton")
 overlay.Name="Hitbox";overlay.Size=UDim2.fromScale(1,1);overlay.BackgroundTransparency=1
 overlay.Text="";overlay.AutoButtonColor=false;overlay.IsHitTestVisible=true
@@ -9379,6 +9436,7 @@ L.PendingSelection=nil;L.GuiDirty=nil;L.ButtonsDirty=nil;L.PreviewDirty=nil;L.Ne
 for _,connection in ipairs(L.Connections) do connection:Disconnect() end;table.clear(L.Connections)
 for _,connections in pairs(L.Buttons) do for _,connection in ipairs(connections) do connection:Disconnect() end end;table.clear(L.Buttons)
 for _,overlay in pairs(L.Overlays) do overlay:Destroy() end;table.clear(L.Overlays)
+L.GuardDrops=0;if L.GuardSeen then table.clear(L.GuardSeen) end
 L.GuiRoot=nil;L.ArmoryRoot=nil;L.Baseline=nil;L.SourceFunctions={};L.SourceScript=nil;L.SourceStatus=nil;L.Loadouts={};L.CatalogData=nil;L.RestoreVisual()
 L.VisualIDs=nil;L.VisualSerial=0
 L.NextResume=0;L.ResumeCharacter=nil;L.ResumeTool=nil;L.ResumeAttempts=0;L.ResumeError=nil
@@ -14995,7 +15053,7 @@ function ShotDetector.Report()
 local stats=ShotDetector.RayStats or {}
 local api=Ghost.HookAPI
 local capabilities={}
-for _,name in ipairs({"hookmetamethod","getnamecallmethod","checkcaller","hookfunction","getrawmetatable","setreadonly","isreadonly"}) do
+for _,name in ipairs({"hookmetamethod","getnamecallmethod","checkcaller","hookfunction","getrawmetatable","setreadonly","isreadonly","getconnections"}) do
 local present=type(api[name])=="function"
 if name=="hookmetamethod" then present=api.NativeMetamethod==true end
 table.insert(capabilities,name.."="..tostring(present))
@@ -15015,6 +15073,12 @@ local native=Ghost.OutsideShots
 if native and (native.Snapshot or native.Packets>0) then
 table.insert(out,"Outside tracers: native Fire packets="..native.Packets.."; rendered paths="..native.Traces.."; dropped/budget="..native.Dropped)
 table.insert(out,"Outside held muzzle="..(native.Snapshot and native.Snapshot.Marker:GetFullName() or "not currently available").."; native selection hook="..tostring(Ghost.HookAPI.NamecallInstalled==true))
+end
+local equip=Ghost.InventoryUnlock and Ghost.InventoryUnlock.LocalEquip
+if equip then
+local state=Ghost.InventoryUnlock.Active==true and "active (Unlock All on)" or "standby (Unlock All off)"
+if not equip.GuardHooked then state=state.."; network layer unavailable on this executor - click overlay only" end
+table.insert(out,"Ghost "..tostring(Ghost.Version).." | Urban selection guard: "..state.."; dropped requests="..tostring(equip.GuardDrops or 0))
 end
 table.insert(out,"Intercept/filter counts do not prove bullet damage or server acceptance. No camera origin is substituted for a missing muzzle.")
 return table.concat(out,"\n")
