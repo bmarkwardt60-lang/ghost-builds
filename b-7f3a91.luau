@@ -4,7 +4,7 @@ local UserInputService: any = game:GetService("UserInputService")
 local TweenService: any     = game:GetService("TweenService")
 local HttpService: any      = game:GetService("HttpService")
 local Workspace: any        = game:GetService("Workspace")
-local Ghost: {[string]:any} = {Name="Ghost",Version="2.4.19"}
+local Ghost: {[string]:any} = {Name="Ghost",Version="2.4.20"}
 Ghost.Marks=setmetatable({},{__mode="k"})
 function Ghost.Mark(object: any, key: string, value: any)
 if not object then return end
@@ -1007,7 +1007,9 @@ U.FlushStatus()
 end
 function U.RunWorker()
 while Alive do
-task.wait(.03)
+local equip=U.LocalEquip
+local busy=(equip and (equip.Active or (equip.Queued or 0)>0)) and true or false
+task.wait(busy and .05 or .5)
 if Alive then U.Pump() end
 end
 end
@@ -1090,34 +1092,6 @@ if not wrapped then return end
 U.Wrapped=nil
 pcall(function() wrapped.Data.Unlocked=wrapped.Original end)
 end
-function U.DrainQueue()
-if not U.Active or not U.Queue or #U.Queue==0 then return false end
-local batch={}
-for _=1,3 do
-if #U.Queue==0 then break end
-table.insert(batch,table.remove(U.Queue,1))
-if math.random()<.4 then break end
-end
-local latest=LocalPlayer:GetAttribute("Unlocks")
-local raw,message=U.Merge(latest,batch)
-if not raw then U.Stop();U.Status(message);return false end
-if not U.Write(raw) then U.Stop();U.Status("Local attribute update failed.");return false end
-U.Written=raw
-return #U.Queue>0
-end
-function U.QueueStart()
-U.Queue={}
-for _,id in ipairs(U.IDs) do table.insert(U.Queue,id) end
-U.QueueToken=(U.QueueToken or 0)+1
-local token=U.QueueToken
-task.spawn(function()
-while U.Active and token==U.QueueToken do
-task.wait(.35+math.random()*.9)
-if not U.Active or token~=U.QueueToken then return end
-if not U.DrainQueue() then return end
-end
-end)
-end
 function U.Stop()
 if U.LocalEquip then U.LocalEquip.Stop() end
 U.Active=false;U.PendingUnlocks=nil;U.Queue=nil
@@ -1133,11 +1107,9 @@ if U.Active then U.Status("Unlock all is already active. Press Restore game inve
 if not U.Resolve() then U.Status("No matching game adapter. Urban Reload is supported only in its detected place; other games need their own adapter.");return false end
 local ids,err=U.Catalog()
 if not ids then U.Status(err);return false end
-U.Original=LocalPlayer:GetAttribute("Unlocks")
 U.IDs=ids;U.Active=true
 U.Wrap(U.CatalogData,ids)
-U.QueueStart()
-U.Status("Unlocked cosmetic options for "..#ids.." owned-weapon items locally. The unlock list updates gradually in the background; weapons, ammo and server ownership are unchanged.")
+U.Status("Unlocked cosmetic options for "..#ids.." owned-weapon items through the game's own local check. Nothing is written to Roblox state; weapons, ammo and server ownership are unchanged.")
 if U.LocalEquip then U.LocalEquip.Start() end
 return true
 end
@@ -1564,9 +1536,7 @@ if not O.Active then return end
 local changed=O.DrainSelections()
 if O.SavePending then O.SavePending=nil;O.SaveChoices(false) end
 if changed then
-local unlocks=O.MergeUnlocks(O.Baselines.Unlocks)
-local attachments=O.MergeAttachments(O.Baselines.Attachments)
-if not unlocks or not attachments or not O.Write("Unlocks",unlocks) or not O.Write("Attachments",attachments) then
+if not O.MergeUnlocks(O.Baselines.Unlocks) or not O.MergeAttachments(O.Baselines.Attachments) then
 O.Stop();U.Status("Outside's inventory format changed; local changes were restored.");return
 end
 if O.LastSelection then U.Status("Outside · local choice saved: "..O.LastSelection..". Equip that gun to display it.") end
@@ -1581,7 +1551,7 @@ if not held or not O.Choices[weapon] then
 if O.Visual then O.Release() end
 return
 end
-local all=O.Decode(O.Written.Attachments)
+local all=O.Decode(O.MergeAttachments(O.Baselines.Attachments))
 local mods=all and all[weapon]
 if type(mods)~="table" then return end
 if not O.Visual or O.Dirty then
@@ -1617,8 +1587,7 @@ local remote=net and net:FindFirstChild("Attachment")
 if not remote or not remote:IsA("RemoteEvent") then U.Status("Outside's attachment selection endpoint is unavailable.");return false end
 O.Remote=remote;O.Written={};O.Writing={};O.Pending={};O.Queue={};O.Choices={};O.Baselines={}
 for _,key in ipairs({"Unlocks","Attachments"}) do O.Baselines[key]=LocalPlayer:GetAttribute(key) end
-local raw=O.MergeUnlocks(O.Baselines.Unlocks)
-if not raw or not O.Decode(O.Baselines.Attachments) then U.Status("Outside's local inventory data has an unsupported format. No changes made.");return false end
+if not O.Decode(O.Baselines.Attachments) then U.Status("Outside's local inventory data has an unsupported format. No changes made.");return false end
 O.LoadChoices()
 O.Active=true;U.Active=true
 for _,key in ipairs({"Unlocks","Attachments"}) do
@@ -1628,12 +1597,7 @@ local latest=LocalPlayer:GetAttribute(key)
 if latest~=O.Written[key] then O.Pending[key]={Value=latest} end
 end))
 end
-if not O.Write("Unlocks",raw) then O.Stop();U.Status("Outside local catalog could not be applied.");return false end
-if next(O.Choices) then
-local attachments=O.MergeAttachments(O.Baselines.Attachments)
-if not attachments or not O.Write("Attachments",attachments) then O.Stop();U.Status("Outside saved appearance could not be restored.");return false end
-O.Dirty=true
-end
+if next(O.Choices) then O.Dirty=true end
 RunService:BindToRenderStep("LocalPreview",Enum.RenderPriority.Last.Value+4,function()
 local success,message=pcall(O.Render)
 if not success then O.Release();O.LastError=tostring(message) end
@@ -3579,7 +3543,8 @@ local palette=Themes[item.Style or Settings.UI.Style] or Themes.Ghost
 if not reduced and not item.Static then item.SceneTime=(item.SceneTime or 0)+math.min(dt,.1) end
 local static=item.Static or (item.Clip=="Background" and palette.BackgroundAsset~=nil) or (item.Clip=="Logo" and palette.LogoAsset~=nil) or reduced or (item.Clip=="Background" and not Settings.UI.AnimatedBackground) or (item.Clip=="Logo" and not Settings.UI.AnimatedLogo)
 if static then item.Frame=1; item.Elapsed=0 end
-local loaded=art.Render(item)
+local loaded=if (static and item.PaintDone) then true else art.Render(item)
+if static and loaded then item.PaintDone=true end
 if not static and art.Ready and loaded then
 local playback=Settings.UI.Style=="Ghost" and 1 or math.clamp((tonumber(Settings.UI.ThemeAnimationSpeed) or 70)/100,.25,1.25)
 item.Elapsed+=math.clamp(dt,0,0.1)*playback
@@ -3665,7 +3630,16 @@ end
 return loaded
 end
 end
-Connect(RunService.RenderStepped,Ghost.Art.Step)
+do
+local pending=0;local nextAt=0
+Connect(RunService.RenderStepped,function(dt: number)
+pending+=dt
+if os.clock()<nextAt then return end
+nextAt=os.clock()+.067
+local step=pending;pending=0
+Ghost.Art.Step(step)
+end)
+end
 do
 local Settings: any=Settings
 local Theme: any=Theme
@@ -8626,9 +8600,7 @@ silent=baseline==true or (baseline==nil and state.BuiltinSilenced)
 end
 state.Values={encoded,silent};state.Mods=mods;state.Catalog=catalog
 A.SyncCapacity(state)
-local wroteMods=A.Write(state.Records[1],encoded)
-local wroteSilent=A.Write(state.Records[2],silent)
-local wroteCapacity=true
+local wroteMods,wroteSilent,wroteCapacity=true,true,true
 if state.Silenced~=silent or state.Audio==nil then
 state.Silenced=silent;state.Audio=A.LoadedAudio()
 if state.Audio and state.Handle then pcall(state.Audio.Prepare,tool,state.Handle,true,silent) end
@@ -8662,12 +8634,7 @@ A.NextCheck=os.clock()+.25
 local character=LocalPlayer.Character
 if not U.Active or not character or state.Tool.Parent~=character then A.Restore();return end
 A.SyncCapacity(state)
-local valid=true
-for index,record in ipairs(state.Records) do
-if record.Key=="MagSize" then continue end
-if not A.Write(record,state.Values[index]) then valid=false end
-end
-if valid then A.LastError=nil end
+A.LastError=nil
 A.SyncMuzzle(state)
 end
 function A.PrimeRail(copy,mods)
