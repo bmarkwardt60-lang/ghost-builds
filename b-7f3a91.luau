@@ -4,7 +4,7 @@ local UserInputService: any = game:GetService("UserInputService")
 local TweenService: any     = game:GetService("TweenService")
 local HttpService: any      = game:GetService("HttpService")
 local Workspace: any        = game:GetService("Workspace")
-local Ghost: {[string]:any} = {Name="Ghost",Version="2.4.20"}
+local Ghost: {[string]:any} = {Name="Ghost",Version="2.4.21"}
 Ghost.Marks=setmetatable({},{__mode="k"})
 function Ghost.Mark(object: any, key: string, value: any)
 if not object then return end
@@ -1109,7 +1109,7 @@ local ids,err=U.Catalog()
 if not ids then U.Status(err);return false end
 U.IDs=ids;U.Active=true
 U.Wrap(U.CatalogData,ids)
-U.Status("Unlocked cosmetic options for "..#ids.." owned-weapon items through the game's own local check. Nothing is written to Roblox state; weapons, ammo and server ownership are unchanged.")
+U.Status("Unlocked cosmetic options for "..#ids.." owned-weapon items through the game's own local check. Selections are applied locally and never sent to the game's server; weapons, ammo and server ownership are unchanged.")
 if U.LocalEquip then U.LocalEquip.Start() end
 return true
 end
@@ -8700,7 +8700,7 @@ record.Finish.Position=record.Start.Position+record.Direction*math.clamp(distanc
 end
 end
 end
-Ghost.InventoryUnlock.LocalEquip={Connections={},Buttons={},Serial=0,NextCheck=0}
+Ghost.InventoryUnlock.LocalEquip={Connections={},Buttons={},Overlays={},Serial=0,NextCheck=0}
 do
 local U=Ghost.InventoryUnlock
 local L=U.LocalEquip
@@ -9312,21 +9312,31 @@ else U.Status(message or "No changed native preview appeared. The previous local
 end
 function L.Watch(button)
 if not button:IsA("GuiButton") or button.Name:sub(1,5)~="Item_" or L.Buttons[button] then return end
+local overlay=Instance.new("TextButton")
+overlay.Name="Hitbox";overlay.Size=UDim2.fromScale(1,1);overlay.BackgroundTransparency=1
+overlay.Text="";overlay.AutoButtonColor=false;overlay.IsHitTestVisible=true
+overlay.ZIndex=1000;overlay.Parent=button
+L.Overlays[button]=overlay
 local before
-local press=button.InputBegan:Connect(function(input)
+local function select()
+if not U.Active then return end
+L.Serial+=1;local serial=L.Serial
+L.PendingSelection={Serial=serial,Button=button,Baseline=before or L.Baseline}
+before=nil
+end
+local function press(input)
 if not U.Active then return end
 local kind=input.UserInputType
 if kind==Enum.UserInputType.MouseButton1 or kind==Enum.UserInputType.Touch or kind==Enum.UserInputType.Keyboard or kind==Enum.UserInputType.Gamepad1 then
 before=L.Baseline
 end
-end)
-local click=button.Activated:Connect(function()
-if not U.Active then return end
-L.Serial+=1;local serial=L.Serial
-L.PendingSelection={Serial=serial,Button=button,Baseline=before or L.Baseline}
-before=nil
-end)
-L.Buttons[button]={press,click}
+end
+L.Buttons[button]={
+overlay.InputBegan:Connect(press),
+overlay.Activated:Connect(select),
+button.InputBegan:Connect(press),
+button.Activated:Connect(select),
+}
 end
 function L.Pump()
 if not U.Active then return end
@@ -9342,6 +9352,7 @@ for button,connections in pairs(L.Buttons) do
 if not armory or not button:IsDescendantOf(armory) then
 for _,connection in ipairs(connections) do connection:Disconnect() end
 L.Buttons[button]=nil
+local overlay=L.Overlays[button];if overlay then overlay:Destroy();L.Overlays[button]=nil end
 end
 end
 if armory then for _,object in ipairs(armory:GetDescendants()) do L.Watch(object) end end
@@ -9367,6 +9378,7 @@ L.Serial+=1;L.SourceGeneration=(L.SourceGeneration or 0)+1;L.ScanningSources=fal
 L.PendingSelection=nil;L.GuiDirty=nil;L.ButtonsDirty=nil;L.PreviewDirty=nil;L.NeedsRestore=nil
 for _,connection in ipairs(L.Connections) do connection:Disconnect() end;table.clear(L.Connections)
 for _,connections in pairs(L.Buttons) do for _,connection in ipairs(connections) do connection:Disconnect() end end;table.clear(L.Buttons)
+for _,overlay in pairs(L.Overlays) do overlay:Destroy() end;table.clear(L.Overlays)
 L.GuiRoot=nil;L.ArmoryRoot=nil;L.Baseline=nil;L.SourceFunctions={};L.SourceScript=nil;L.SourceStatus=nil;L.Loadouts={};L.CatalogData=nil;L.RestoreVisual()
 L.VisualIDs=nil;L.VisualSerial=0
 L.NextResume=0;L.ResumeCharacter=nil;L.ResumeTool=nil;L.ResumeAttempts=0;L.ResumeError=nil
